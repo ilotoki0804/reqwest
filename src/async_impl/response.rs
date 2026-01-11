@@ -1,9 +1,12 @@
+#[cfg(feature = "charset")]
+use std::borrow::Cow;
 use std::fmt;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
 
 use bytes::Bytes;
+use http::response::Parts;
 use http_body_util::BodyExt;
 use hyper::{HeaderMap, StatusCode, Version};
 use hyper_util::client::legacy::connect::HttpInfo;
@@ -24,9 +27,104 @@ use encoding_rs::{Encoding, UTF_8};
 #[cfg(feature = "charset")]
 use mime::Mime;
 
+macro_rules! res {
+    (take $self:ident => $method:ident) => {
+        match $self.res {
+            ProcessableResponse::Response(res) => res.$method(),
+            ProcessableResponse::Processed(res) => res.$method(),
+            ProcessableResponse::Nothing => unreachable!(),
+        }
+    };
+    ($self:ident => $method:ident) => {
+        match &$self.res {
+            ProcessableResponse::Response(ref res) => res.$method(),
+            ProcessableResponse::Processed(res) => res.$method(),
+            ProcessableResponse::Nothing => unreachable!(),
+        }
+    };
+    (mut $self:ident => $method:ident) => {
+        match &mut $self.res {
+            ProcessableResponse::Response(ref mut res) => res.$method(),
+            ProcessableResponse::Processed(ref mut res) => res.$method(),
+            ProcessableResponse::Nothing => unreachable!(),
+        }
+    };
+}
+
+pub enum ProcessableResponse {
+    Response(hyper::Response<ResponseBody>),
+    // parts를 저장하기 위한 가짜 response
+    Processed(hyper::Response<Bytes>),
+    Nothing, // &mut self로 값을 처리하기 위해 사용하는 임시변통의 값. 절대 직접 사용해서는 안 됨.
+}
+
+impl ProcessableResponse {
+    async fn process(&mut self) -> crate::Result<()> {
+        let taked = std::mem::replace(self, Self::Nothing);
+        *self = taked.into_processed().await?;
+        Ok(())
+    }
+
+    async fn into_processed(self) -> crate::Result<Self> {
+        use ProcessableResponse::*;
+        let result = match self {
+            Response(response) => {
+                use http_body_util::BodyExt;
+
+                let (head, body) = response.into_parts();
+                let bytes = BodyExt::collect(body)
+                    .await
+                    .map(|buf| buf.to_bytes())
+                    .map_err(crate::error::decode)?;
+
+                Processed(hyper::Response::from_parts(head, bytes))
+            }
+            Processed(response) => Processed(response),
+            ProcessableResponse::Nothing => unreachable!(),
+        };
+        Ok(result)
+    }
+
+    // fn body(&self) -> &ResponseBody {
+    //     use CanBeProcessedResponse::*;
+    //     match self {
+    //         Response(ref res) => res.body(),
+    //         Processed { .. } => panic!("Response already processed."),
+    //         Nothing => unreachable!(),
+    //     }
+    // }
+
+    fn body_mut(&mut self) -> &mut ResponseBody {
+        use ProcessableResponse::*;
+        match self {
+            Response(ref mut res) => res.body_mut(),
+            Processed { .. } => panic!("Response already processed."),
+            Nothing => unreachable!(),
+        }
+    }
+
+    fn into_body(self) -> ResponseBody {
+        use ProcessableResponse::*;
+        match self {
+            Response(res) => res.into_body(),
+            Processed { .. } => panic!("Response already processed."),
+            Nothing => unreachable!(),
+        }
+    }
+
+    fn into_parts(self) -> (Parts, ResponseBody) {
+        use ProcessableResponse::*;
+        match self {
+            Response(res) => res.into_parts(),
+            Processed { .. } => panic!("Response already processed."),
+            Nothing => unreachable!(),
+        }
+    }
+}
+
 /// A Response to a submitted `Request`.
 pub struct Response {
-    pub(super) res: hyper::Response<ResponseBody>,
+    pub(super) res: ProcessableResponse,
     // Boxed to save space (11 words to 1 word), and it's not accessed
     // frequently internally.
     url: Box<Url>,
@@ -46,7 +144,7 @@ impl Response {
         );
 
         Response {
-            res,
+            res: ProcessableResponse::Response(res),
             url: Box::new(url),
         }
     }
@@ -54,25 +152,25 @@ impl Response {
     /// Get the `StatusCode` of this `Response`.
     #[inline]
     pub fn status(&self) -> StatusCode {
-        self.res.status()
+        res!(self => status)
     }
 
     /// Get the HTTP `Version` of this `Response`.
     #[inline]
     pub fn version(&self) -> Version {
-        self.res.version()
+        res!(self => version)
     }
 
     /// Get the `Headers` of this `Response`.
     #[inline]
     pub fn headers(&self) -> &HeaderMap {
-        self.res.headers()
+        res!(self => headers)
     }
 
     /// Get a mutable reference to the `Headers` of this `Response`.
     #[inline]
     pub fn headers_mut(&mut self) -> &mut HeaderMap {
-        self.res.headers_mut()
+        res!(mut self => headers_mut)
     }
 
     /// Get the content length of the response, if it is known.
@@ -90,7 +188,16 @@ impl Response {
     pub fn content_length(&self) -> Option<u64> {
         use hyper::body::Body;
 
-        Body::size_hint(self.res.body()).exact()
+        use ProcessableResponse::*;
+        match &self.res {
+            Response(ref response) => {
+                Body::size_hint(response.body()).exact()
+            }
+            Processed(response) => {
+                Some(response.body().len() as u64)
+            }
+            Nothing => unreachable!(),
+        }
     }
 
     /// Retrieve the cookies contained in the response.
@@ -114,20 +221,23 @@ impl Response {
 
     /// Get the remote address used to get this `Response`.
     pub fn remote_addr(&self) -> Option<SocketAddr> {
-        self.res
-            .extensions()
+        // self.res
+        //     .extensions()
+        res!(self => extensions)
             .get::<HttpInfo>()
             .map(|info| info.remote_addr())
     }
 
     /// Returns a reference to the associated extensions.
     pub fn extensions(&self) -> &http::Extensions {
-        self.res.extensions()
+        // self.res.extensions()
+        res!(self => extensions)
     }
 
     /// Returns a mutable reference to the associated extensions.
     pub fn extensions_mut(&mut self) -> &mut http::Extensions {
-        self.res.extensions_mut()
+        // self.res.extensions_mut()
+        res!(mut self => extensions_mut)
     }
 
     // body methods
@@ -171,6 +281,20 @@ impl Response {
             let full = self.bytes().await?;
             let text = String::from_utf8_lossy(&full);
             Ok(text.into_owned())
+        }
+    }
+
+    pub async fn text_ref(&mut self) -> crate::Result<Cow<'_, str>> {
+        #[cfg(feature = "charset")]
+        {
+            self.text_ref_with_charset("utf-8").await
+        }
+
+        #[cfg(not(feature = "charset"))]
+        {
+            let full = self.bytes_ref().await?;
+            let text = String::from_utf8_lossy(&full);
+            Ok(text)
         }
     }
 
@@ -221,6 +345,25 @@ impl Response {
 
         let (text, _, _) = encoding.decode(&full);
         Ok(text.into_owned())
+    }
+
+    #[cfg(feature = "charset")]
+    pub async fn text_ref_with_charset(&mut self, default_encoding: &str) -> crate::Result<Cow<'_, str>> {
+        let content_type = self
+            .headers()
+            .get(crate::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<Mime>().ok());
+        let encoding_name = content_type
+            .as_ref()
+            .and_then(|mime| mime.get_param("charset").map(|charset| charset.as_str()))
+            .unwrap_or(default_encoding);
+        let encoding = Encoding::for_label(encoding_name.as_bytes()).unwrap_or(UTF_8);
+
+        let full = self.bytes_ref().await?;
+
+        let (text, _, _) = encoding.decode(full);
+        Ok(text)
     }
 
     /// Try to deserialize the response body as JSON.
@@ -288,12 +431,23 @@ impl Response {
     /// # }
     /// ```
     pub async fn bytes(self) -> crate::Result<Bytes> {
-        use http_body_util::BodyExt;
+        let processed = self.res.into_processed().await?;
+        let ProcessableResponse::Processed(response) = processed else {
+            unreachable!()
+        };
+        Ok(response.into_body())
+    }
 
-        BodyExt::collect(self.res.into_body())
-            .await
-            .map(|buf| buf.to_bytes())
-            .map_err(crate::error::decode)
+    pub async fn bytes_ref(&mut self) -> crate::Result<&Bytes> {
+        Ok(self.bytes_mut().await?)
+    }
+
+    pub async fn bytes_mut(&mut self) -> crate::Result<&mut Bytes> {
+        self.res.process().await?;
+        let ProcessableResponse::Processed(response) = &mut self.res else {
+            unreachable!()
+        };
+        Ok(response.body_mut())
     }
 
     /// Stream a chunk of the response body.
@@ -466,7 +620,7 @@ impl<T: Into<Body>> From<http::Response<T>> for Response {
         let url = url.0;
         let res = hyper::Response::from_parts(parts, ResponseBody::new(body.map_err(Into::into)));
         Response {
-            res,
+            res: ProcessableResponse::Response(res),
             url: Box::new(url),
         }
     }
@@ -489,17 +643,19 @@ mod tests {
     use http::response::Builder;
     use url::Url;
 
-    #[test]
-    fn test_from_http_response() {
+    #[tokio::test]
+    async fn test_from_http_response() {
         let url = Url::parse("http://example.com").unwrap();
         let response = Builder::new()
             .status(200)
             .url(url.clone())
             .body("foo")
             .unwrap();
-        let response = Response::from(response);
+        let mut response = Response::from(response);
 
         assert_eq!(response.status(), 200);
         assert_eq!(*response.url(), url);
+        assert_eq!("foo", response.text_ref().await.unwrap());
+        assert_eq!("foo", response.text_ref().await.unwrap());
     }
 }
