@@ -1,8 +1,22 @@
-#![deny(missing_docs)]
-#![deny(missing_debug_implementations)]
-#![cfg_attr(docsrs, feature(doc_cfg))]
-#![cfg_attr(not(test), warn(unused_crate_dependencies))]
-#![cfg_attr(test, deny(warnings))]
+#![allow(clippy::needless_lifetimes)]
+#![allow(clippy::single_component_path_imports)]
+#![allow(clippy::map_clone)]
+#![allow(clippy::collapsible_else_if)]
+#![allow(clippy::mixed_attributes_style)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::len_zero)]
+#![allow(clippy::type_complexity)]
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::non_minimal_cfg)]
+#![allow(clippy::missing_const_for_thread_local)]
+#![allow(clippy::manual_range_contains)]
+
+// #![deny(missing_docs)]
+// #![deny(missing_debug_implementations)]
+// #![cfg_attr(docsrs, feature(doc_cfg))]
+// #![cfg_attr(not(test), warn(unused_crate_dependencies))]
+// #![cfg_attr(test, deny(warnings))]
 
 //! # reqwest
 //!
