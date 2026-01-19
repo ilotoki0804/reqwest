@@ -1,6 +1,8 @@
 #[cfg(feature = "charset")]
 use std::borrow::Cow;
-use std::fmt;
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt::{self, Debug, Display};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::time::Duration;
@@ -10,6 +12,7 @@ use http::response::Parts;
 use http_body_util::BodyExt;
 use hyper::{HeaderMap, StatusCode, Version};
 use hyper_util::client::legacy::connect::HttpInfo;
+use serde::{Deserialize, Serialize};
 #[cfg(feature = "json")]
 use serde::de::DeserializeOwned;
 #[cfg(feature = "json")]
@@ -51,7 +54,7 @@ macro_rules! res {
     };
 }
 
-pub enum ProcessableResponse {
+pub(crate) enum ProcessableResponse {
     Response(hyper::Response<ResponseBody>),
     // parts를 저장하기 위한 가짜 response
     Processed(hyper::Response<Bytes>),
@@ -586,6 +589,24 @@ impl Response {
     pub(crate) fn body_mut(&mut self) -> &mut ResponseBody {
         self.res.body_mut()
     }
+
+    pub fn new_processed(
+        res: http::Response<Bytes>,
+        url: Url,
+    ) -> Self {
+        Self {
+            res: ProcessableResponse::Processed(res),
+            url: Box::new(url),
+        }
+    }
+
+    pub async fn process(&mut self) -> crate::Result<()> {
+        self.res.process().await
+    }
+
+    pub fn to_serializable(&self) -> Result<SerializableResponse<'_>, ResponseSerializeError> {
+        self.try_into()
+    }
 }
 
 impl fmt::Debug for Response {
@@ -633,6 +654,126 @@ impl From<Response> for http::Response<Body> {
         let (parts, body) = r.res.into_parts();
         let body = Body::wrap(body);
         http::Response::from_parts(parts, body)
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SerializableResponse<'a> {
+    url: &'a str,
+    body: Bytes,
+    status: u16,
+    version: u8,
+    headers: Option<HashMap<&'a str, Cow<'a, str>>>,
+    // Extensions are not serializable by design.
+    // To learn more about extensions, refer to the following blog post.
+    // https://blog.adamchalmers.com/what-are-extensions/
+}
+
+#[derive(Debug)]
+pub enum ResponseSerializeError {
+    NotProcessed,
+    HttpError(http::Error),
+    UrlParseError(url::ParseError),
+}
+
+impl From<http::Error> for ResponseSerializeError {
+    fn from(value: http::Error) -> Self {
+        Self::HttpError(value)
+    }
+}
+
+impl From<url::ParseError> for ResponseSerializeError {
+    fn from(value: url::ParseError) -> Self {
+        Self::UrlParseError(value)
+    }
+}
+
+impl Display for ResponseSerializeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotProcessed => write!(f, "Response is not processed."),
+            Self::HttpError(err) => write!(f, "{}", err),
+            Self::UrlParseError(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl Error for ResponseSerializeError {}
+
+impl<'a> TryFrom<&'a Response> for SerializableResponse<'a> {
+    type Error = ResponseSerializeError;
+
+    fn try_from(value: &'a Response) -> Result<Self, Self::Error> {
+        let ProcessableResponse::Processed(response) = &value.res else {
+            return Err(ResponseSerializeError::NotProcessed);
+        };
+
+        let url = value.url.as_str();
+        let body = response.body().slice(..);
+        let status = response.status().as_u16();
+        let version = match response.version() {
+                #[allow(clippy::zero_prefixed_literal)]
+                Version::HTTP_09 => 09,
+                Version::HTTP_10 => 10,
+                Version::HTTP_11 => 11,
+                Version::HTTP_2 => 20,
+                Version::HTTP_3 => 30,
+                _ => unimplemented!(),
+        };
+        let headers = {
+            let response_headers = response.headers();
+            if response_headers.is_empty() {
+                None
+            } else {
+                let mut headers = HashMap::new();
+                for key in response_headers.keys() {
+                    // The existence of a key is guaranteed above.
+                    let value = response_headers.get(key).unwrap();
+                    let value = value.as_bytes();
+                    // I hope lossy transitions don't happen that much...
+                    let value = String::from_utf8_lossy(value);
+                    headers.insert(key.as_str(), value);
+                }
+                Some(headers)
+            }
+        };
+
+        Ok(SerializableResponse {
+            url,
+            body,
+            status,
+            version,
+            headers,
+        })
+    }
+}
+
+impl<'a> TryFrom<SerializableResponse<'a>> for Response {
+    type Error = ResponseSerializeError;
+
+    fn try_from(value: SerializableResponse<'a>) -> Result<Self, Self::Error> {
+        let inner_response: hyper::Response<Bytes> = {
+            let mut builder= hyper::Response::builder();
+            builder = builder.status(value.status);
+            if let Some(headers) = value.headers {
+                for (key, value) in headers {
+                    let value: &str = &value;
+                    builder = builder.header(key, value);
+                }
+            }
+            builder = builder.version(match value.version {
+                #[allow(clippy::zero_prefixed_literal)]
+                09 => Version::HTTP_09,
+                10 => Version::HTTP_10,
+                11 => Version::HTTP_11,
+                20 => Version::HTTP_2,
+                30 => Version::HTTP_3,
+                _ => unimplemented!(),
+            });
+            builder.body(bytes::Bytes::copy_from_slice(&value.body))?
+        };
+        let response = Response::new_processed(inner_response, value.url.try_into()?);
+        Ok(response)
     }
 }
 
