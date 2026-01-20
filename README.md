@@ -72,3 +72,21 @@ be dual licensed as above, without any additional terms or conditions.
 Support this project by becoming a [sponsor][].
 
 [sponsor]: https://seanmonstar.com/sponsor
+
+## Fork Modification
+
+This fork gives you an option to serialize responses and catch and store requests and responses in sqlite database to use them later.
+
+### Development History
+
+I used a custom library on top of httpx called httpc that has some helpful utilities and an `httpc.catcher` extension.
+The extension sits in front of the request handler so that it can catch a request and provide a response by using the cached one instead of actually sending network requests, or store responses for later use.
+I wanted to port it to reqwest as well.
+
+[reqwest_mock](https://github.com/leoschwarz/reqwest_mock) provides wrapper trait aroud `reqwest::Client`, so others can implement mocking client for reqwest. But it is discountinued because the library author thought there are much better solutions out there. But it provides useful links of mocking libraries of reqwest.
+
+I tried to implement a mock client by implementing a custom middleware for Tower ([guide](https://github.com/tower-rs/tower/blob/master/guides/building-a-middleware-from-scratch.md)), but I couldn't manipulate a request and a response with it.
+
+So I tried using [reqwest-middleware](https://github.com/TrueLayer/reqwest-middleware) to implement the mocker, but it was not enuogh to implement what I want, although it can be a middleware between a request and a response, I cannot find a way to crate a custom response or storing a body of the response after being initialized.
+
+Finally, I decided to fork reqwest itself and make own version of reqwest that supports what I want.
