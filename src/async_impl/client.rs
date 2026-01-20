@@ -12,6 +12,8 @@ use std::{fmt, str};
 use super::request::{Request, RequestBuilder};
 use super::response::Response;
 use super::Body;
+#[cfg(feature = "catcher")]
+use crate::async_impl::catcher::Queue;
 #[cfg(feature = "http3")]
 use crate::async_impl::h3_client::connect::{H3ClientConfig, H3Connector};
 #[cfg(feature = "http3")]
@@ -265,6 +267,9 @@ struct Config {
     unix_socket: Option<Arc<std::path::Path>>,
     #[cfg(target_os = "windows")]
     windows_named_pipe: Option<Arc<std::ffi::OsStr>>,
+
+    #[cfg(feature = "catcher")]
+    catcher_queue: Option<Arc<Queue>>,
 }
 
 impl Default for ClientBuilder {
@@ -388,6 +393,8 @@ impl ClientBuilder {
                 unix_socket: None,
                 #[cfg(target_os = "windows")]
                 windows_named_pipe: None,
+                #[cfg(feature = "catcher")]
+                catcher_queue: None,
             },
         }
     }
@@ -1083,11 +1090,19 @@ impl ClientBuilder {
                 proxies_maybe_http_custom_headers,
                 https_only: config.https_only,
                 redirect_policy_desc,
+                #[cfg(feature = "catcher")]
+                catcher_queue: config.catcher_queue,
             }),
         })
     }
 
     // Higher-level options
+
+    #[cfg(feature = "catcher")]
+    pub fn catcher_queue(mut self, queue: Arc<Queue>) -> ClientBuilder {
+        self.config.catcher_queue = Some(queue);
+        self
+    }
 
     /// Sets the `User-Agent` header to be used by this client.
     ///
@@ -2686,6 +2701,13 @@ impl Client {
             }
         }
     }
+
+    #[cfg(feature = "catcher")]
+    pub(crate) fn queue(&self) -> Option<Arc<Queue>> {
+        let queue = self.inner.catcher_queue.as_ref()?;
+        let queue = Arc::clone(queue);
+        Some(queue)
+    }
 }
 
 impl fmt::Debug for Client {
@@ -2912,6 +2934,8 @@ struct ClientRef {
     proxies_maybe_http_custom_headers: bool,
     https_only: bool,
     redirect_policy_desc: Option<String>,
+    #[cfg(feature = "catcher")]
+    catcher_queue: Option<Arc<Queue>>,
 }
 
 impl ClientRef {

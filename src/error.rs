@@ -192,6 +192,11 @@ impl Error {
     pub(crate) fn into_io(self) -> io::Error {
         io::Error::new(io::ErrorKind::Other, self)
     }
+
+    #[cfg(feature = "catcher")]
+    pub fn is_catcher(&self) -> bool {
+        matches!(self.inner.kind, Kind::Catcher)
+    }
 }
 
 /// Converts from external types to reqwest's
@@ -262,6 +267,8 @@ impl fmt::Display for Error {
                     write!(f, "{prefix} ({code})")?;
                 }
             }
+            #[cfg(feature = "catcher")]
+            Kind::Catcher => f.write_str("error catching request")?,
         };
 
         if let Some(url) = &self.inner.url {
@@ -304,6 +311,8 @@ pub(crate) enum Kind {
     Body,
     Decode,
     Upgrade,
+    #[cfg(feature = "catcher")]
+    Catcher,
 }
 
 // constructors
@@ -360,6 +369,11 @@ if_wasm! {
 
 pub(crate) fn upgrade<E: Into<BoxError>>(e: E) -> Error {
     Error::new(Kind::Upgrade, Some(e))
+}
+
+#[cfg(feature = "catcher")]
+pub(crate) fn catcher<E: Into<BoxError>>(e: E) -> Error {
+    Error::new(Kind::Catcher, Some(e))
 }
 
 // io::Error helpers

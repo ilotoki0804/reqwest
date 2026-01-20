@@ -11,7 +11,6 @@
 #![allow(clippy::non_minimal_cfg)]
 #![allow(clippy::missing_const_for_thread_local)]
 #![allow(clippy::manual_range_contains)]
-
 // #![deny(missing_docs)]
 // #![deny(missing_debug_implementations)]
 // #![cfg_attr(docsrs, feature(doc_cfg))]
@@ -373,6 +372,8 @@ if_hyper! {
     pub use self::async_impl::{
         Body, Client, ClientBuilder, Request, RequestBuilder, Response, Upgraded, SerializableResponse,
     };
+    #[cfg(feature = "catcher")]
+    pub use self::async_impl::catcher;
     pub use self::proxy::{Proxy,NoProxy};
     #[cfg(feature = "__tls")]
     // Re-exports, to be removed in a future release

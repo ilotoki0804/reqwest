@@ -6,6 +6,8 @@ pub use self::response::SerializableResponse;
 pub use self::upgrade::Upgraded;
 
 pub mod body;
+#[cfg(feature = "catcher")]
+pub mod catcher;
 pub mod client;
 pub mod h3_client;
 #[cfg(feature = "multipart")]

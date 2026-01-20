@@ -1,5 +1,6 @@
 use std::convert::TryFrom;
 use std::fmt;
+#[cfg(not(feature = "catcher"))]
 use std::future::Future;
 use std::time::Duration;
 
@@ -515,11 +516,43 @@ impl RequestBuilder {
     /// # Ok(())
     /// # }
     /// ```
+    #[cfg(not(feature = "catcher"))]
     pub fn send(self) -> impl Future<Output = Result<Response, crate::Error>> {
         match self.request {
             Ok(req) => self.client.execute_request(req),
             Err(err) => Pending::new_err(err),
         }
+    }
+
+    #[cfg(feature = "catcher")]
+    pub async fn send(self) -> Result<Response, crate::Error> {
+        let req = match self.request {
+            Ok(req) => req,
+            Err(err) => return Pending::new_err(err).await,
+        };
+
+        let Some(queue) = self.client.queue() else {
+            return self.client.execute_request(req).await;
+        };
+
+        let (req, response) = queue.find_response(req).await?;
+        if let Some(response) = response {
+            return Ok(response);
+        }
+
+        if !queue.mode.does_store_response() {
+            return self.client.execute_request(req).await;
+        }
+
+        let req_cloned = req.try_clone();
+        let mut res = self.client.execute_request(req).await?;
+
+        res.process().await?;
+        let Some(req) = req_cloned else {
+            return Err(crate::catcher::create_error(anyhow::anyhow!("Streamed requests cannot be stored.")));
+        };
+        let res = queue.store_response(req, res).await?;
+        Ok(res)
     }
 
     /// Attempt to clone the RequestBuilder.
