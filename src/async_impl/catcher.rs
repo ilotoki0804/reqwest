@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque, mem, sync::{Arc, Mutex}, thread::{self, JoinHandle}
+    mem, sync::{Mutex, mpsc::{self, Receiver, Sender}}, thread::{self, JoinHandle}
 };
 
 use anyhow::bail;
@@ -8,32 +8,20 @@ use crate::{Request, Response, SerializableResponse};
 use rusqlite::Connection;
 use serde_json::Value;
 
-#[derive(Debug)]
-pub enum CatcherFuture {
-    // First future command (finding request)
+enum CatcherRequest {
     /// Finding request
     Request(Request),
-    /// Request found (or not)
-    Response(Request, Option<Response>),
-    
-    // Second future command (storing request)
     /// Storing request, response pair
     Store(Request, Response),
-    /// Completed storing response
-    Stored(Response),
-
-    // Special future status
-    /// Some error happend
-    Error(crate::Error),
-    /// Processing a future
-    Processing,
 }
 
-impl CatcherFuture {
-    fn is_processed(&self) -> bool {
-        use CatcherFuture::*;
-        matches!(self, Response(..) | Stored(_) | Error(_))
-    }
+enum CatcherResponse {
+    /// Request found (or not)
+    Response(Request, Option<Response>),
+    /// Completed storing response
+    Stored(Response),
+    /// Some error happend
+    Error(crate::Error),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,22 +46,17 @@ impl CatcherMode {
     }
 }
 
-type Message = Arc<Mutex<CatcherFuture>>;
-
 // Arc<Queue>를 가지고 사용하면 됨
 pub struct Queue {
-    deque: Arc<Mutex<VecDeque<Message>>>,
+    request_sender: Option<Sender<CatcherRequest>>,
+    response_receiver: Mutex<Receiver<CatcherResponse>>,
     handle: Option<JoinHandle<()>>,
-    terminate: Arc<Mutex<bool>>,
     pub mode: CatcherMode,
 }
 
 impl Drop for Queue {
     fn drop(&mut self) {
-        {
-            let mut lock = self.terminate.lock().unwrap();
-            *lock = true;
-        };
+        drop(mem::take(&mut self.request_sender));
         if let Some(handle) = mem::take(&mut self.handle) {
             handle.join().unwrap();
         }
@@ -82,13 +65,13 @@ impl Drop for Queue {
 
 impl Queue {
     pub fn new(mut config: CatcherConfig) -> Self {
-        let deque = Arc::new(Mutex::new(VecDeque::new()));
-        let terminate = Arc::new(Mutex::new(false));
+        let (request_sender, request_receiver) = mpsc::channel();
+        let (response_sender, response_receiver) = mpsc::channel();
         let mut queue = Queue {
-            deque: Arc::clone(&deque),
+            request_sender: Some(request_sender),
+            response_receiver: Mutex::new(response_receiver),
             handle: None,
             mode: CatcherMode::Hybrid,
-            terminate: Arc::clone(&terminate),
         };
         let handle: thread::JoinHandle<()> = thread::spawn(move || {
             if config.initialize {
@@ -108,78 +91,56 @@ impl Queue {
             }
 
             loop {
-                // TODO: 공회전 문제 해결할 수 있는지 생각해볼 것
-                // terminate를 위가 아니라 아래에 놓으면 queue가 채워지길 영원히 기다리고 결과적으로 무한 루프에 빠짐
-                // loop의 시작과 deque의 continue 사이에 terminate를 check하는 코드가 있어야 무한 루프에 빠지지 않을 수 있음.
-                if *terminate.lock().unwrap() {
-                    break;
-                }
-
-                // TODO: lock이 아니라 try_lock 사용? async를 사용하면?
-                let Some(message) = deque.lock().unwrap().pop_front() else {
-                    continue;
+                let future = match request_receiver.recv() {
+                    Ok(future) => future,
+                    // sender hung up
+                    Err(_) => break,
                 };
 
-                {
-                    let mut lock = message.lock().unwrap();
-                    let future = mem::replace(&mut lock as &mut CatcherFuture, CatcherFuture::Processing);
-                    // process_future를 실행하는 동안 lock을 계속 가지고 있어야 할 필요는 이론상 없음.
-                    // 필요한 경우 lock을 내려놓고, 처리하고 다시 lock을 집어서 처리해도 됨.
-                    let response_future = match config.process_future(future) {
-                        Ok(future) => future,
-                        Err(error) => CatcherFuture::Error(create_error(error)),
-                    };
-                    *lock = response_future;
-                }
+                let response_future = match config.process_future(future) {
+                    Ok(future) => future,
+                    Err(error) => CatcherResponse::Error(create_error(error)),
+                };
+                response_sender.send(response_future).unwrap();
             }
         });
         queue.handle = Some(handle);
         queue
     }
 
-    async fn get_future_response(&self, future: CatcherFuture) -> CatcherFuture {
-        let message = Arc::new(Mutex::new(future));
-        self.deque.lock().unwrap().push_back(Arc::clone(&message));
-        // TODO: 나중에 async로 변경하거나 하자
-        loop {
-            if let Ok(lock) = message.try_lock() {
-                if lock.is_processed() {
-                    break;
-                }
-            }
-        }
-
-        Arc::into_inner(message).unwrap().into_inner().unwrap()
+    async fn get_future_response(&self, future: CatcherRequest) -> CatcherResponse {
+        // 값을 보내기 전 미리 receiver의 값을 점유하고 값을 받으면 풂으로써 한 번에 하나의 요청만 처리되도록 함.
+        let response_receiver = self.response_receiver.lock().unwrap();
+        self.request_sender.as_ref().unwrap().send(future).unwrap();
+        response_receiver.recv().unwrap()
     }
 
     pub(crate) async fn find_response(&self, request: Request) -> crate::Result<(Request, Option<Response>)> {
-        use CatcherFuture::*;
         if !self.mode.does_find_response() {
             return Ok((request, None))
         }
 
-        let result = self.get_future_response(Request(request)).await;
+        let result = self.get_future_response(CatcherRequest::Request(request)).await;
 
         match result {
-            Response(request, response) => {
+            CatcherResponse::Response(request, response) => {
                 if response.is_none() && self.mode.does_abort_when_failed_to_find_response() {
                     return Err(create_error(anyhow::anyhow!("Response was not found.")));
                 }
                 Ok((request, response))
             },
-            Error(err) => Err(err),
+            CatcherResponse::Error(err) => Err(err),
             _ => unreachable!(),
         }
     }
 
     /// response는 반드시 processed된 상태어야 합니다!
     pub(crate) async fn store_response(&self, request: Request, response: Response) -> crate::Result<Response> {
-        use CatcherFuture::*;
         if self.mode.does_store_response() {
-            let result = self.get_future_response(Store(request, response)).await;
+            let result = self.get_future_response(CatcherRequest::Store(request, response)).await;
             match result {
-                Stored(response) => Ok(response),
-                Error(err) => Err(err),
+                CatcherResponse::Stored(response) => Ok(response),
+                CatcherResponse::Error(err) => Err(err),
                 _ => unreachable!(),
             }
         } else {
@@ -211,21 +172,16 @@ impl CatcherConfig {
         Self { connection, check_headers, category, initialize }
     }
 
-    fn process_future(&mut self, future: CatcherFuture) -> anyhow::Result<CatcherFuture> {
-        use CatcherFuture::*;
+    fn process_future(&mut self, future: CatcherRequest) -> anyhow::Result<CatcherResponse> {
         let result = match future {
-            Request(request) => {
+            CatcherRequest::Request(request) => {
                 let response = self.find_response(&request)?;
-                Response(request, response)
+                CatcherResponse::Response(request, response)
             },
-            Store(request, response) => {
+            CatcherRequest::Store(request, response) => {
                 self.store_response(&request, &response)?;
-                Stored(response)
+                CatcherResponse::Stored(response)
             }
-            Response(..) => unreachable!(),
-            Stored(_) => unreachable!(),
-            Error(_) => unreachable!(),
-            Processing => unreachable!(),
         };
         Ok(result)
     }
