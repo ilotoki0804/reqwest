@@ -20,7 +20,7 @@ enum CatcherResponse {
     Response(Request, Option<Response>),
     /// Completed storing response
     Stored(Response),
-    /// Some error happend
+    /// Some error happened
     Error(crate::Error),
 }
 
@@ -52,7 +52,7 @@ pub struct Queue {
     request_sender: Option<Sender<CatcherRequest>>,
     response_receiver: Mutex<Receiver<CatcherResponse>>,
     handle: Option<JoinHandle<()>>,
-    pub mode: CatcherMode,
+    pub(super) mode: CatcherMode,
 }
 
 impl Drop for Queue {
@@ -72,7 +72,7 @@ impl Queue {
             request_sender: Some(request_sender),
             response_receiver: Mutex::new(response_receiver),
             handle: None,
-            mode: CatcherMode::Hybrid,
+            mode: config.mode,
         };
         let handle: thread::JoinHandle<()> = thread::spawn(move || {
             if config.initialize {
@@ -152,6 +152,7 @@ impl Queue {
 
 pub struct CatcherConfig {
     connection: Connection,
+    mode: CatcherMode,
     category: String,
     // 아마 feature로 빼는 것도 가능할 수도??
     check_headers: bool,
@@ -169,8 +170,8 @@ fn header_map_to_json(header_map: &HeaderMap) -> anyhow::Result<Value> {
 }
 
 impl CatcherConfig {
-    pub fn new(connection: Connection, category: String, check_headers: bool, initialize: bool) -> Self {
-        Self { connection, check_headers, category, initialize }
+    pub fn new(connection: Connection, mode: CatcherMode, category: String, check_headers: bool, initialize: bool) -> Self {
+        Self { connection, mode, check_headers, category, initialize }
     }
 
     pub fn build_queue(self) -> Queue {
