@@ -537,6 +537,7 @@ impl RequestBuilder {
 
         let (req, response) = queue.find_response(req).await?;
         if let Some(response) = response {
+            // println!("Request {} is loaded without actual network request.", req.url());
             return Ok(response);
         }
 
