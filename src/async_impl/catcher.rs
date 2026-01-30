@@ -172,6 +172,10 @@ impl CatcherConfig {
         Self { connection, check_headers, category, initialize }
     }
 
+    pub fn build_queue(self) -> Queue {
+        Queue::new(self)
+    }
+
     fn process_future(&mut self, future: CatcherRequest) -> anyhow::Result<CatcherResponse> {
         let result = match future {
             CatcherRequest::Request(request) => {
