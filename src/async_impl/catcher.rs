@@ -47,6 +47,7 @@ impl CatcherMode {
 }
 
 // Arc<Queue>를 가지고 사용하면 됨
+#[derive(Debug)]
 pub struct Queue {
     request_sender: Option<Sender<CatcherRequest>>,
     response_receiver: Mutex<Receiver<CatcherResponse>>,
