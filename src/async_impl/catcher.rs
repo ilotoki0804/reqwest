@@ -33,14 +33,17 @@ pub enum CatcherMode {
 }
 
 impl CatcherMode {
+    #[inline]
     pub fn does_find_response(&self) -> bool {
         matches!(self, Self::Use | Self::Hybrid)
     }
 
+    #[inline]
     pub fn does_abort_when_failed_to_find_response(&self) -> bool {
         matches!(self, Self::Use)
     }
 
+    #[inline]
     pub fn does_store_response(&self) -> bool {
         matches!(self, Self::Store | Self::Hybrid)
     }
@@ -170,10 +173,12 @@ fn header_map_to_json(header_map: &HeaderMap) -> anyhow::Result<Value> {
 }
 
 impl CatcherConfig {
+    #[inline]
     pub fn new(connection: Connection, mode: CatcherMode, category: String, check_headers: bool, initialize: bool) -> Self {
         Self { connection, mode, check_headers, category, initialize }
     }
 
+    #[inline]
     pub fn build_queue(self) -> Queue {
         Queue::new(self)
     }
