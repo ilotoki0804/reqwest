@@ -644,9 +644,12 @@ impl ClientBuilder {
                 TlsBackend::BuiltRustls(conn) => {
                     #[cfg(feature = "http3")]
                     {
+                        let mut h3_tls = conn.clone();
+                        h3_tls.alpn_protocols = vec!["h3".into()];
+
                         h3_connector = build_h3_connector(
                             resolver.clone(),
-                            conn.clone(),
+                            h3_tls,
                             config.quic_max_idle_timeout,
                             config.quic_stream_receive_window,
                             config.quic_receive_window,
@@ -825,7 +828,7 @@ impl ClientBuilder {
                         }
                         #[cfg(feature = "http3")]
                         HttpVersionPref::Http3 => {
-                            tls.alpn_protocols = vec!["h3".into()];
+                            // h3 ALPN is not valid over TCP
                         }
                         HttpVersionPref::All => {
                             tls.alpn_protocols = vec![
@@ -838,11 +841,15 @@ impl ClientBuilder {
 
                     #[cfg(feature = "http3")]
                     {
-                        tls.enable_early_data = config.tls_enable_early_data;
+                        let mut h3_tls = tls.clone();
+                        h3_tls.enable_early_data = config.tls_enable_early_data;
+
+                        // h3 ALPN is required over QUIC for HTTP/3
+                        h3_tls.alpn_protocols = vec!["h3".into()];
 
                         h3_connector = build_h3_connector(
                             resolver.clone(),
-                            tls.clone(),
+                            h3_tls,
                             config.quic_max_idle_timeout,
                             config.quic_stream_receive_window,
                             config.quic_receive_window,
