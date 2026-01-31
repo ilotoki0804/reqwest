@@ -38,7 +38,8 @@ features = [
 [features]
 default = ["default-tls", "charset", "http2", "system-proxy", "catcher"]
 
-catcher = ["bytes/serde", "dep:anyhow", "dep:postcard", "dep:rusqlite"]
+catcher = ["bytes/serde", "dep:anyhow", "dep:postcard", "dep:rusqlite", "dep:serde_json", "dep:serde"]
+catcher-bundled = ["catcher", "rusqlite/bundled"]
 default-tls = ["rustls"]
 
 http2 = ["dep:h2", "hyper/http2", "hyper-util/http2", "hyper-rustls?/http2"]
