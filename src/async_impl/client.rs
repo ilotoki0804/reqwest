@@ -2708,6 +2708,11 @@ impl Client {
         let queue = Arc::clone(queue);
         Some(queue)
     }
+
+    #[cfg(feature = "catcher")]
+    pub(super) fn default_headers(&self) -> &http::HeaderMap {
+        &self.inner.headers
+    }
 }
 
 impl fmt::Debug for Client {

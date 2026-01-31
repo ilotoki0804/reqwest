@@ -3,7 +3,6 @@ use std::{
 };
 
 use anyhow::bail;
-use http::HeaderMap;
 use crate::{Request, Response, SerializableResponse};
 use rusqlite::Connection;
 use serde_json::Value;
@@ -162,14 +161,17 @@ pub struct CatcherConfig {
     initialize: bool,
 }
 
-fn header_map_to_json(header_map: &HeaderMap) -> anyhow::Result<Value> {
+/// default_headers가 적용되도록 하려면 반드시 필요합니다.
+fn request_header_string(request: &Request) -> anyhow::Result<String> {
+    let final_headers = request.final_headers.as_ref().unwrap();
     let mut headers: serde_json::Map<String, Value> = serde_json::Map::new();
-    for (name, value) in header_map {
+    for (name, value) in final_headers {
         let name = name.as_str();
         let value = value.as_bytes();
         headers.insert(name.to_string(), Value::String(std::str::from_utf8(value)?.to_string()));
     }
-    Ok(Value::Object(headers))
+    let stringified_headers = serde_json::to_string(&serde_json::to_value(headers)?)?;
+    Ok(stringified_headers)
 }
 
 impl CatcherConfig {
@@ -203,7 +205,7 @@ impl CatcherConfig {
         // NULL은 다른 NULL과 비교 시 NULL(false로 간주됨)이 나오기 때문에 반드시 null 대신 empty blob를 저장해야 함!
         let body = request.body().and_then(|body| body.as_bytes()).unwrap_or(b"");
         let method = request.method().as_str();
-        let headers = serde_json::to_string(&header_map_to_json(request.headers())?)?;
+        let headers = request_header_string(request)?;
         let category = self.category.as_str();
 
         if !self.check_headers {
@@ -275,7 +277,7 @@ impl CatcherConfig {
         let url = request.url().as_str();
         let body = request.body().and_then(|body| body.as_bytes()).unwrap_or(b"");
         let method = request.method().as_str();
-        let headers = serde_json::to_string(&header_map_to_json(request.headers())?)?;
+        let headers = request_header_string(request)?;
         let category = self.category.as_str();
         let response = postcard::to_allocvec(&response.to_serializable()?)?;
         let compressed = 2;

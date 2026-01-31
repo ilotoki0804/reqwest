@@ -31,6 +31,8 @@ pub struct Request {
     body: Option<Body>,
     version: Version,
     extensions: Extensions,
+    #[cfg(feature = "catcher")]
+    pub(super) final_headers: Option<HeaderMap>,
 }
 
 /// A builder to construct the properties of a `Request`.
@@ -53,6 +55,8 @@ impl Request {
             body: None,
             version: Version::default(),
             extensions: Extensions::new(),
+            #[cfg(feature = "catcher")]
+            final_headers: None,
         }
     }
 
@@ -526,10 +530,14 @@ impl RequestBuilder {
 
     #[cfg(feature = "catcher")]
     pub async fn send(self) -> Result<Response, crate::Error> {
-        let req = match self.request {
+        let final_headers = self.final_headers();
+
+        let mut req = match self.request {
             Ok(req) => req,
             Err(err) => return Pending::new_err(err).await,
         };
+
+        req.final_headers = Some(final_headers);
 
         let Some(queue) = self.client.queue() else {
             return self.client.execute_request(req).await;
@@ -584,6 +592,20 @@ impl RequestBuilder {
                 client: self.client.clone(),
                 request: Ok(req),
             })
+    }
+
+    #[cfg(feature = "catcher")]
+    pub(super) fn final_headers(&self) -> http::HeaderMap {
+        let client_headers = self.client.default_headers();
+        let req_headers = &self.request.as_ref().unwrap().headers;
+        let mut headers = http::HeaderMap::new();
+        for (key, value) in client_headers {
+            headers.insert(key, value.clone());
+        }
+        for (key, value) in req_headers {
+            headers.insert(key, value.clone());
+        }
+        headers
     }
 }
 
@@ -664,6 +686,8 @@ where
             body: Some(body.into()),
             version,
             extensions,
+            #[cfg(feature = "catcher")]
+            final_headers: None,
         })
     }
 }
